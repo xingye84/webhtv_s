@@ -3,6 +3,7 @@ package com.fongmi.android.tv;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
+import android.content.pm.SigningInfo;
 import android.os.Build;
 import android.os.SystemClock;
 import android.text.TextUtils;
@@ -594,7 +595,8 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
     private boolean validatePackage(File file, Update update, boolean checksumVerified) {
         try {
             PackageManager manager = App.get().getPackageManager();
-            int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
+            int flags = PackageManager.GET_SIGNATURES;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) flags |= PackageManager.GET_SIGNING_CERTIFICATES;
             PackageInfo archive = manager.getPackageArchiveInfo(file.getAbsolutePath(), flags);
             PackageInfo installed = manager.getPackageInfo(BuildConfig.APPLICATION_ID, flags);
             if (archive == null || installed == null || !BuildConfig.APPLICATION_ID.equals(archive.packageName)) return false;
@@ -611,32 +613,30 @@ public class Updater implements UpdateTransfer.Callback, UpdateListener {
         return checksumVerified;
     }
 
-    private boolean signaturesMatch(PackageInfo installed, PackageInfo archive, boolean checksumVerified) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            // Some OEM ROMs do not populate signingInfo for getPackageArchiveInfo().
-            // Keep the installed signature authoritative, but let an unreadable
-            // candidate reach the OS installer, which remains the compatibility gate.
-            if (installed.signingInfo == null) return false;
-            if (archive.signingInfo == null) return canAcceptUnreadableArchiveSignature(checksumVerified);
-            if (installed.signingInfo.hasMultipleSigners() || archive.signingInfo.hasMultipleSigners()) {
-                Set<String> installedPrints = fingerprints(installed.signingInfo.getApkContentsSigners());
-                Set<String> archivePrints = fingerprints(archive.signingInfo.getApkContentsSigners());
-                if (installedPrints.isEmpty()) return false;
-                if (archivePrints.isEmpty()) return canAcceptUnreadableArchiveSignature(checksumVerified);
-                return installedPrints.equals(archivePrints);
-            }
-            Set<String> current = fingerprints(installed.signingInfo.getApkContentsSigners());
-            Set<String> candidateHistory = fingerprints(archive.signingInfo.getSigningCertificateHistory());
-            if (current.isEmpty()) return false;
-            if (candidateHistory.isEmpty()) return canAcceptUnreadableArchiveSignature(checksumVerified);
-            return candidateHistory.containsAll(current);
-        }
-        if (fingerprints(installed.signatures).isEmpty()) return false;
-        if (fingerprints(archive.signatures).isEmpty()) return canAcceptUnreadableArchiveSignature(checksumVerified);
-        return fingerprints(installed.signatures).equals(fingerprints(archive.signatures));
+    static boolean signaturesMatch(PackageInfo installed, PackageInfo archive, boolean checksumVerified) {
+        boolean supportsSigningInfo = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
+        SigningInfo installedSigning = supportsSigningInfo ? installed.signingInfo : null;
+        SigningInfo archiveSigning = supportsSigningInfo ? archive.signingInfo : null;
+        Set<String> installedSigners = fingerprints(installedSigning == null ? null : installedSigning.getApkContentsSigners());
+        Set<String> archiveSigners = fingerprints(archiveSigning == null ? null : archiveSigning.getApkContentsSigners());
+        boolean installedHasModernSigners = !installedSigners.isEmpty();
+        boolean archiveHasModernSigners = !archiveSigners.isEmpty();
+
+        // Some TV ROMs only populate PackageInfo.signatures. Prefer current signers when available.
+        if (!installedHasModernSigners) installedSigners = fingerprints(installed.signatures);
+        if (installedSigners.isEmpty()) return false;
+        if (!archiveHasModernSigners) archiveSigners = fingerprints(archive.signatures);
+        if (archiveSigners.isEmpty()) return canAcceptUnreadableArchiveSignature(checksumVerified);
+        if (installedSigners.equals(archiveSigners)) return true;
+
+        // The legacy field can report the oldest certificate after rotation.
+        // Check the candidate's lineage only when both current single signers are known.
+        return installedHasModernSigners && archiveHasModernSigners
+                && !installedSigning.hasMultipleSigners() && !archiveSigning.hasMultipleSigners()
+                && fingerprints(archiveSigning.getSigningCertificateHistory()).containsAll(installedSigners);
     }
 
-    private Set<String> fingerprints(Signature[] signatures) {
+    private static Set<String> fingerprints(Signature[] signatures) {
         Set<String> values = new HashSet<>();
         if (signatures == null) return values;
         for (Signature signature : signatures) {
