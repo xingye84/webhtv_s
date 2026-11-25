@@ -28,44 +28,32 @@ public class SearchResultDownFocusTest {
     }
 
     @Test
-    public void deferredResultFocusScrollsFirstAndRejectsStaleRequests() throws Exception {
+    public void deferredResultFocusLaysOutMissingRowsAndRejectsStaleRequests() throws Exception {
         String source = read("app/src/leanback/java/com/fongmi/android/tv/ui/activity/CollectActivity.java");
         int start = source.indexOf("private void focusSearchTarget(int position)");
         int end = source.indexOf("private boolean canFocusSearchResult(int position)");
 
         assertTrue("search results must define a deferred focus policy", start >= 0 && end > start);
         String focus = source.substring(start, end);
-        assertTrue("a missing target must scroll to the requested row before focusing it",
-                focus.contains("scrollToSearchResult(position);"));
-        assertTrue("focus must be restored after the target is laid out",
-                focus.contains("mBinding.recycler.post(") && focus.contains("requestSearchResultFocus(position, generation);"));
-        assertTrue("a focused target must be aligned fully into view",
-                focus.contains("alignSearchResultCard(position, target);")
-                        && focus.contains("alignSearchResultCard(position, laidOutTarget);"));
-        assertTrue("focus must be requested after the explicit row layout completes",
-                focus.contains("private void requestSearchResultFocus(int position, int generation)")
-                        && focus.contains("if (target != null) target.requestFocus();"));
+        assertTrue("the grid must try to lay out an adjacent row before explicitly scrolling",
+                focus.indexOf("recycler.focusSearch(focused, View.FOCUS_DOWN);") >= 0
+                        && focus.indexOf("recycler.scrollToPosition(position);") > focus.indexOf("recycler.focusSearch(focused, View.FOCUS_DOWN);"));
+        assertTrue("focus must be requested after the fallback row layout completes",
+                focus.contains("OneShotPreDrawListener.add(recycler,")
+                        && focus.contains("if (laidOutTarget != null) laidOutTarget.requestFocus();"));
+        assertTrue("an attached card should take focus without forcing a new row layout",
+                focus.contains("target.requestFocus();") && !focus.contains("scrollToPositionWithOffset"));
         assertTrue("a later down press must invalidate a queued focus request",
                 focus.contains("int generation = ++mSearchFocusGeneration;")
                         && focus.contains("if (generation != mSearchFocusGeneration"));
     }
 
     @Test
-    public void downNavigationAlignsTheFocusedResultCardToTheViewportBottom() throws Exception {
+    public void resultGridUsesFocusScrollingAndSkipsBaselineMeasurement() throws Exception {
         String source = read("app/src/leanback/java/com/fongmi/android/tv/ui/activity/CollectActivity.java");
-        int start = source.indexOf("private void alignSearchResultCard(int position, View focusedView)");
-        int end = source.indexOf("private void preloadNextRows(int count)");
-
-        assertTrue("search results must define focused-card alignment", start >= 0 && end > start);
-        String align = source.substring(start, end);
-        assertTrue("down navigation must align the complete target row instead of relying on default focus scrolling",
-                align.contains("int rowStart = Math.max(0, position - position % spanCount);")
-                        && align.contains("layoutManager.scrollToPositionWithOffset(rowStart, offset);"));
-        assertTrue("the target card bottom must be placed inside the result viewport",
-                align.contains("int bottom = mBinding.recycler.getHeight() - mBinding.recycler.getPaddingBottom() - padding;")
-                        && align.contains("int offset = Math.max(mBinding.recycler.getPaddingTop(), bottom - cardHeight);"));
-        assertTrue("default focus animation must not overwrite the explicit row position",
-                align.contains("mBinding.recycler.stopScroll();"));
+        String layout = read("app/src/leanback/res/layout/activity_collect.xml");
+        assertTrue(source.contains("mBinding.recycler.setLayoutManager(new FocusGridLayoutManager(this, count));"));
+        assertTrue(layout.contains("android:layout_weight=\"1\"\n        android:baselineAligned=\"false\"\n        android:orientation=\"horizontal\""));
     }
 
     @Test
@@ -79,6 +67,10 @@ public class SearchResultDownFocusTest {
                 listener.contains("recyclerView.post(() ->")
                         && listener.contains("ensureSearchRows(count, 2);")
                         && listener.contains("preloadNextRows(count);"));
+        String stateListener = source.substring(listenerEnd, source.indexOf("mBinding.recycler.setAdapter", listenerEnd));
+        assertTrue("stopping focus scrolling must defer pending insertions until outside layout",
+                stateListener.indexOf("recyclerView.post(() ->") >= 0
+                        && stateListener.indexOf("flushPendingItems();") > stateListener.indexOf("recyclerView.post(() ->"));
         int start = source.indexOf("private void preloadNextRows(int count)");
         int end = source.indexOf("@Override\n    public void onItemClick", start);
 
