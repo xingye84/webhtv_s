@@ -3,6 +3,7 @@ package com.fongmi.android.tv.utils;
 import android.text.TextUtils;
 
 import com.fongmi.android.tv.bean.SyncOptions;
+import com.fongmi.android.tv.setting.CustomCspSetting;
 import com.github.catvod.crawler.SpiderDebug;
 import com.github.catvod.utils.Path;
 
@@ -12,6 +13,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -24,7 +26,7 @@ import java.util.zip.ZipOutputStream;
 public class SyncFiles {
 
     public static final String DEFAULT_PATHS = "TV\nTVBox\nTVData";
-    public static final String CUSTOM_CSP_PATH = "TV/CustomCsp";
+    public static final String CUSTOM_CSP_PATH = CustomCspSetting.ARCHIVE_PATH;
     public static final String PART_NAME = "syncFiles";
 
     private static final int BUFFER_SIZE = 128 * 1024;
@@ -84,14 +86,14 @@ public class SyncFiles {
     }
 
     public static Archive createArchive(List<String> paths, BooleanSupplier running, Progress progress) throws IOException {
-        return createArchive(Path.root(), Path.cache(), paths, running, progress);
+        return createArchive(Path.root(), Path.cache(), CustomCspSetting.dir(), paths, running, progress);
     }
 
     static Archive createArchive(File root, File cache, List<String> paths) throws IOException {
-        return createArchive(root, cache, paths, null, null);
+        return createArchive(root, cache, null, paths, null, null);
     }
 
-    private static Archive createArchive(File root, File cache, List<String> paths, BooleanSupplier running, Progress progress) throws IOException {
+    static Archive createArchive(File root, File cache, File privateCsp, List<String> paths, BooleanSupplier running, Progress progress) throws IOException {
         List<String> targets = normalizeTargets(paths);
         if (targets.isEmpty()) return null;
         root = root.getCanonicalFile();
@@ -104,9 +106,18 @@ public class SyncFiles {
         try (ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(archive), BUFFER_SIZE))) {
             for (String path : targets) {
                 checkRunning(running);
+                if (privateCsp != null && (covers(path, CUSTOM_CSP_PATH) || covers(CUSTOM_CSP_PATH, path))) {
+                    File file = covers(CUSTOM_CSP_PATH, path) ? cspFile(privateCsp, path) : privateCsp;
+                    if (file.exists()) {
+                        Stats stats = add(privateCsp, file, CUSTOM_CSP_PATH, true, zos, buffer, running, progress, total, tracker);
+                        count += stats.count;
+                        size += stats.size;
+                    }
+                    if (covers(CUSTOM_CSP_PATH, path)) continue;
+                }
                 File file = new File(root, path);
                 if (!inside(root, file) || !file.exists()) continue;
-                Stats stats = add(root, file, zos, buffer, running, progress, total, tracker);
+                Stats stats = add(root, file, "", privateCsp != null, zos, buffer, running, progress, total, tracker);
                 count += stats.count;
                 size += stats.size;
             }
@@ -125,8 +136,11 @@ public class SyncFiles {
     }
 
     public static int restoreArchive(File archive) throws IOException {
+        return restoreArchive(archive, Path.root(), CustomCspSetting.dir());
+    }
+
+    static int restoreArchive(File archive, File root, File privateCsp) throws IOException {
         if (archive == null || !archive.isFile() || archive.length() <= 0) return 0;
-        File root = Path.root().getCanonicalFile();
         int count = 0;
         byte[] buffer = new byte[BUFFER_SIZE];
         try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(new FileInputStream(archive), BUFFER_SIZE))) {
@@ -134,12 +148,17 @@ public class SyncFiles {
             while ((entry = zis.getNextEntry()) != null) {
                 String path = normalize(entry.getName());
                 if (path.isEmpty()) continue;
-                File out = new File(root, path);
-                if (!inside(root, out)) continue;
+                boolean custom = covers(CUSTOM_CSP_PATH, path);
+                if (CUSTOM_CSP_PATH.equals(path) && !entry.isDirectory()) continue;
+                File base = custom ? privateCsp : root;
+                File out = custom ? cspFile(base, path) : new File(base, path);
+                if (!inside(base, out)) continue;
                 if (entry.isDirectory()) {
                     out.mkdirs();
                 } else {
-                    try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(Path.create(out)), BUFFER_SIZE)) {
+                    if (custom) Files.createDirectories(out.toPath().getParent());
+                    else Path.create(out);
+                    try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(out), BUFFER_SIZE)) {
                         int read;
                         while ((read = zis.read(buffer)) != -1) bos.write(buffer, 0, read);
                     }
@@ -169,8 +188,10 @@ public class SyncFiles {
     }
 
     public static int countFiles(String path) throws IOException {
-        File root = Path.root().getCanonicalFile();
-        File target = new File(root, normalize(path)).getCanonicalFile();
+        String value = normalize(path);
+        boolean custom = covers(CUSTOM_CSP_PATH, value);
+        File root = (custom ? CustomCspSetting.dir() : Path.root()).getCanonicalFile();
+        File target = custom ? cspFile(root, value) : new File(root, value);
         if (!inside(root, target)) return 0;
         return countFiles(root, target, new ArchiveTracker());
     }
@@ -188,11 +209,18 @@ public class SyncFiles {
         return count;
     }
 
-    private static Stats add(File root, File file, ZipOutputStream zos, byte[] buffer, BooleanSupplier running, Progress progress, Stats total, ArchiveTracker tracker) throws IOException {
+    private static File cspFile(File root, String path) {
+        if (CUSTOM_CSP_PATH.equals(path)) return root;
+        return new File(root, path.substring(CUSTOM_CSP_PATH.length() + 1));
+    }
+
+    private static Stats add(File root, File file, String prefix, boolean privateCsp, ZipOutputStream zos, byte[] buffer, BooleanSupplier running, Progress progress, Stats total, ArchiveTracker tracker) throws IOException {
         checkRunning(running);
         File canonical = file.getCanonicalFile();
         if (!inside(root, canonical)) return new Stats();
-        String name = root.toPath().relativize(canonical.toPath()).toString().replace(File.separatorChar, '/');
+        String relative = root.getCanonicalFile().toPath().relativize(canonical.toPath()).toString().replace(File.separatorChar, '/');
+        String name = prefix.isEmpty() ? relative : relative.isEmpty() ? prefix : prefix + "/" + relative;
+        if (privateCsp && prefix.isEmpty() && covers(CUSTOM_CSP_PATH, name)) return new Stats();
         if (skipTree(name)) return new Stats();
         if (canonical.isDirectory()) {
             Stats stats = new Stats();
@@ -205,7 +233,7 @@ public class SyncFiles {
             zos.closeEntry();
             File[] files = canonical.listFiles();
             if (files == null) return stats;
-            for (File child : files) stats.add(add(root, child, zos, buffer, running, progress, total, tracker));
+            for (File child : files) stats.add(add(root, child, prefix, privateCsp, zos, buffer, running, progress, total, tracker));
             return stats;
         }
         if (!canonical.isFile() || skip(name) || !tracker.addEntry(name)) return new Stats();

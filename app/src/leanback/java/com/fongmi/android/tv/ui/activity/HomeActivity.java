@@ -154,7 +154,7 @@ public class HomeActivity extends BaseActivity implements ExitConfirmDialog.List
     private final Runnable mWebConfirmLongPress = this::triggerWebFocusedLongPress;
     private final Runnable mDelayedInitConfig = this::initConfig;
     private final Runnable mDelayedPermissionRequest = () -> {
-        if (!isFinishing() && !isDestroyed()) PermissionUtil.requestFile(this, allGranted -> PermissionUtil.requestNotify(this));
+        if (!isFinishing() && !isDestroyed()) PermissionUtil.requestNotify(this);
     };
     private final Runnable mDelayedDlnaStart = () -> {
         if (!isFinishing() && !isDestroyed()) DLNARendererService.start(this);
@@ -652,7 +652,11 @@ public class HomeActivity extends BaseActivity implements ExitConfirmDialog.List
         if (Intent.ACTION_SEND.equals(intent.getAction())) {
             VideoActivity.push(this, intent.getStringExtra(Intent.EXTRA_TEXT));
         } else if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
-            PermissionUtil.requestFile(this, allGranted -> checkType(intent));
+            if (PermissionUtil.requiresFileAccess(intent.getData().toString())) {
+                PermissionUtil.requestFile(this, allGranted -> checkType(intent));
+            } else {
+                checkType(intent);
+            }
         } else if (Intent.ACTION_SEARCH.equals(intent.getAction())) {
             String keyword = intent.getStringExtra(SearchManager.QUERY);
             if (!TextUtils.isEmpty(keyword)) SearchActivity.start(this, keyword);
@@ -1214,11 +1218,8 @@ public class HomeActivity extends BaseActivity implements ExitConfirmDialog.List
     }
 
     private void openCustomCsp() {
-        PermissionUtil.requestFile(this, granted -> {
-            if (isFinishing() || isDestroyed() || getSupportFragmentManager().isStateSaved()) return;
-            if (granted) CustomCspDialog.show(this, this::setFunc);
-            else Notify.show(R.string.setting_custom_csp_permission_required);
-        });
+        if (isFinishing() || isDestroyed() || getSupportFragmentManager().isStateSaved()) return;
+        CustomCspDialog.show(this, this::setFunc);
     }
 
     @Override
@@ -1398,7 +1399,7 @@ public class HomeActivity extends BaseActivity implements ExitConfirmDialog.List
     @Override
     public void setConfig(Config config) {
         if (config.getType() != 0) return;
-        if (config.getUrl().startsWith("file")) {
+        if (PermissionUtil.requiresFileAccess(config.getUrl())) {
             PermissionUtil.requestFile(this, allGranted -> loadVodConfig(config));
         } else {
             loadVodConfig(config);

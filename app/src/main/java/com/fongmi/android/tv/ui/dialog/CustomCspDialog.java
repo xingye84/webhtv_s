@@ -27,6 +27,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 
 import androidx.annotation.NonNull;
 import androidx.activity.result.ActivityResultLauncher;
@@ -36,6 +37,8 @@ import androidx.appcompat.widget.LinearLayoutCompat;
 import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
+import androidx.fragment.app.FragmentManager;
+import androidx.lifecycle.Lifecycle;
 import androidx.recyclerview.widget.ItemTouchHelper;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -76,6 +79,10 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -99,6 +106,8 @@ public class CustomCspDialog extends BaseAlertDialog {
     private boolean pendingExtensionImport;
     private boolean pendingFilesImport;
     private TextInputEditText pendingFileTarget;
+    private Dialog importProgress;
+    private ImportResult pendingImportResult;
     private Set<String> initialItemIds = new HashSet<>();
     private ThemeTokens themeTokens() {
         return ThemeController.current();
@@ -124,16 +133,27 @@ public class CustomCspDialog extends BaseAlertDialog {
 
     public static void show(Fragment fragment, Runnable callback) {
         if (fragment == null || !fragment.isAdded() || fragment.isStateSaved() || fragment.getActivity() == null || fragment.getChildFragmentManager().isStateSaved()) return;
-        CustomCspDialog dialog = new CustomCspDialog();
-        dialog.callback = callback;
-        dialog.show(fragment.getChildFragmentManager(), null);
+        showAfterLoading(fragment.getActivity(), fragment.getChildFragmentManager(), callback);
     }
 
     public static void show(FragmentActivity activity, Runnable callback) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed() || activity.getSupportFragmentManager().isStateSaved()) return;
-        CustomCspDialog dialog = new CustomCspDialog();
-        dialog.callback = callback;
-        dialog.show(activity.getSupportFragmentManager(), null);
+        showAfterLoading(activity, activity.getSupportFragmentManager(), callback);
+    }
+
+    private static void showAfterLoading(FragmentActivity activity, FragmentManager manager, Runnable callback) {
+        String tag = CustomCspDialog.class.getSimpleName();
+        Task.execute(() -> {
+            CustomCspSetting.Registry loaded = CustomCspSetting.loadForEditor();
+            App.post(() -> {
+                if (activity.isFinishing() || activity.isDestroyed() || manager.isStateSaved()
+                        || manager.isDestroyed() || manager.findFragmentByTag(tag) != null) return;
+                CustomCspDialog dialog = new CustomCspDialog();
+                dialog.callback = callback;
+                dialog.registry = loaded;
+                dialog.showNow(manager, tag);
+            });
+        });
     }
 
     @Override
@@ -166,6 +186,19 @@ public class CustomCspDialog extends BaseAlertDialog {
             else closeAndSave(false);
             return true;
         });
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (pendingImportResult != null) applyPendingImport();
+        else if (importProgress != null) importProgress.show();
+    }
+
+    @Override
+    public void onStop() {
+        if (importProgress != null) importProgress.hide();
+        super.onStop();
     }
 
     /**
@@ -224,7 +257,7 @@ public class CustomCspDialog extends BaseAlertDialog {
 
     @Override
     protected void initView() {
-        registry = CustomCspSetting.load();
+        if (registry == null) registry = CustomCspSetting.load();
         initialItemIds = itemIds(registry.getItems());
         adapter = new CspAdapter(new ArrayList<>(registry.getItems()));
         enabled = registry.isEnabled();
@@ -288,10 +321,17 @@ public class CustomCspDialog extends BaseAlertDialog {
 
     @Override
     public void onDismiss(@NonNull DialogInterface dialog) {
+        discardPendingImport();
         if (clipboardOverlay != null) clipboardOverlay.detach();
         clipboardOverlay = null;
         save(false);
         super.onDismiss(dialog);
+    }
+
+    @Override
+    public void onDestroyView() {
+        discardPendingImport();
+        super.onDestroyView();
     }
 
     private void updateEnabledText() {
@@ -907,7 +947,7 @@ public class CustomCspDialog extends BaseAlertDialog {
         syncAllVisibleRows();
         pendingImport = item;
         clearPendingFlags();
-        FileChooser.from(launcher).show("text/html", new String[]{"text/html", "text/*", "application/octet-stream"});
+        FileChooser.from(launcher).showDocument("text/html", new String[]{"text/html", "text/*", "application/octet-stream"}, false);
     }
 
     private void chooseExtensionFile(CustomCspSetting.Item item) {
@@ -915,7 +955,7 @@ public class CustomCspDialog extends BaseAlertDialog {
         pendingImport = item;
         clearPendingFlags();
         pendingExtensionImport = true;
-        FileChooser.from(launcher).show("text/*", new String[]{"text/javascript", "application/javascript", "application/json", "text/css", "text/*", "application/octet-stream"});
+        FileChooser.from(launcher).showDocument("text/*", new String[]{"text/javascript", "application/javascript", "application/json", "text/css", "text/*", "application/octet-stream"}, false);
     }
 
     private void chooseLocalFiles(CustomCspSetting.Item item) {
@@ -924,7 +964,7 @@ public class CustomCspDialog extends BaseAlertDialog {
         clearPendingFlags();
         pendingFilesImport = true;
         pendingFileTarget = editor == null ? null : editor.getFileTarget();
-        FileChooser.from(launcher).show("*/*", new String[]{"text/javascript", "application/javascript", "application/json", "application/java-archive", "application/octet-stream", "text/*", "*/*"}, true);
+        FileChooser.from(launcher).showDocument("*/*", new String[]{"text/javascript", "application/javascript", "application/json", "application/java-archive", "application/octet-stream", "text/*", "*/*"}, true);
     }
 
     private void editCode(CustomCspSetting.Item item) {
@@ -1119,50 +1159,134 @@ public class CustomCspDialog extends BaseAlertDialog {
     }
 
     private final ActivityResultLauncher<Intent> launcher = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
-        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null || pendingImport == null) return;
-        List<String> paths = FileChooser.getPathsFromIntent(result.getData());
-        if (paths.isEmpty()) return;
-        String path = paths.get(0);
+        CustomCspSetting.Item item = pendingImport;
+        boolean extension = pendingExtensionImport;
+        boolean localFiles = pendingFilesImport;
+        TextInputEditText fileTarget = pendingFileTarget;
+        clearPendingImport();
+        Intent data = result.getData();
+        if (result.getResultCode() != Activity.RESULT_OK || data == null || item == null || !isAdded() || importProgress != null) return;
+        String key = item.getKey();
+        String emptyExtension = getString(R.string.web_home_extension_source_empty);
+        Dialog progress = new WebHtvAlertDialogBuilder(requireContext(), R.style.ThemeOverlay_WebHTV_Dialog)
+                .setTitle(R.string.setting_custom_csp_import)
+                .setView(new ProgressBar(requireContext()))
+                .setCancelable(false)
+                .show();
+        importProgress = progress;
+        Task.execute(() -> {
+            File staging = null;
+            Runnable apply = () -> {};
+            try {
+                staging = Files.createTempDirectory(Path.files().toPath(), ".csp-import-").toFile();
+                List<String> paths = FileChooser.getDocumentCopies(data, staging);
+                if (!paths.isEmpty() && extension) {
+                    String path = paths.get(0);
+                    String content = Path.read(new File(path));
+                    if (TextUtils.isEmpty(content)) throw new IOException(emptyExtension);
+                    String text = extensionArrayText(key, path, content);
+                    apply = () -> applyExtensionImport(item, text);
+                } else if (!paths.isEmpty()) {
+                    List<File> files = stageImportFiles(staging, localFiles ? paths : paths.subList(0, 1));
+                    apply = () -> applyImportedFiles(item, fileTarget, files, localFiles);
+                }
+            } catch (Exception e) {
+                apply = () -> Notify.show(e.getMessage());
+            }
+            File temporary = staging;
+            Runnable resultAction = apply;
+            App.post(() -> {
+                if (importProgress != progress) {
+                    Task.execute(() -> Path.clear(temporary));
+                    return;
+                }
+                pendingImportResult = new ImportResult(temporary, () -> {
+                    if (item == editingItem || adapter.getItems().stream().anyMatch(current -> current == item)) resultAction.run();
+                });
+                if (getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) applyPendingImport();
+            });
+        });
+    });
+
+    private record ImportResult(File staging, Runnable apply) {
+        void cleanUp() {
+            Task.execute(() -> Path.clear(staging));
+        }
+    }
+
+    private void applyPendingImport() {
+        ImportResult result = pendingImportResult;
+        pendingImportResult = null;
+        dismissImportProgress();
         try {
-            if (pendingExtensionImport) {
-                importExtensionFile(pendingImport, path);
-                clearPendingImport();
-                return;
+            result.apply().run();
+        } finally {
+            result.cleanUp();
+        }
+    }
+
+    private void discardPendingImport() {
+        if (pendingImportResult != null) pendingImportResult.cleanUp();
+        pendingImportResult = null;
+        dismissImportProgress();
+    }
+
+    private void dismissImportProgress() {
+        if (importProgress == null) return;
+        importProgress.dismiss();
+        importProgress = null;
+    }
+
+    private static List<File> stageImportFiles(File staging, List<String> paths) throws IOException {
+        List<File> files = new ArrayList<>();
+        for (String path : paths) {
+            File source = new File(path);
+            if (source.toPath().startsWith(staging.toPath())) {
+                files.add(source);
+            } else {
+                java.nio.file.Path child = Files.createTempDirectory(staging.toPath(), "file-").resolve(source.getName());
+                Files.copy(source.toPath(), child);
+                files.add(child.toFile());
             }
-            if (pendingFilesImport) {
-                importLocalFiles(pendingImport, paths);
-                clearPendingImport();
-                return;
+        }
+        return files;
+    }
+
+    private void applyImportedFiles(CustomCspSetting.Item item, TextInputEditText fileTarget, List<File> files, boolean localFiles) {
+        try {
+            List<String> urls = new ArrayList<>();
+            String id = item.getId();
+            for (File source : files) {
+                String name = localFiles ? source.getName() : "index.html";
+                java.nio.file.Path target = CustomCspSetting.file(id, name).toPath();
+                Files.createDirectories(target.getParent());
+                Files.move(source.toPath(), target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                urls.add(CustomCspSetting.localUrl(id, name));
             }
-            CustomCspSetting.copyPage(Path.local(path), pendingImport.getId());
-            pendingImport.setHomePage(CustomCspSetting.localUrl(pendingImport.getId(), "index.html"));
-            markJsonDirty();
-            boolean editingImport = editMode && editor != null && pendingImport == editingItem;
-            clearPendingImport();
-            if (editingImport) editor.updateHomePage();
-            else adapter.notifyDataSetChanged();
+            if (localFiles) {
+                applyLocalFiles(item, fileTarget, urls);
+            } else {
+                item.setHomePage(urls.get(0));
+                markJsonDirty();
+                if (editMode && editor != null && item == editingItem) editor.updateHomePage();
+                else adapter.notifyDataSetChanged();
+            }
         } catch (Exception e) {
-            clearPendingImport();
             Notify.show(e.getMessage());
         }
-    });
+    }
 
     private void clearPendingImport() {
         pendingImport = null;
         clearPendingFlags();
     }
 
-    private void importLocalFiles(CustomCspSetting.Item item, List<String> paths) {
-        List<String> urls = new ArrayList<>();
-        for (String path : paths) {
-            String url = CustomCspSetting.copyFile(Path.local(path), item.getId());
-            urls.add(url);
-            SettingClipboardOverlay.record(url);
-        }
-        if (!urls.isEmpty() && pendingFileTarget != null) {
-            setText(pendingFileTarget, urls.get(0));
-            pendingFileTarget.setSelection(pendingFileTarget.length());
-            pendingFileTarget.requestFocus();
+    private void applyLocalFiles(CustomCspSetting.Item item, TextInputEditText fileTarget, List<String> urls) {
+        for (String url : urls) SettingClipboardOverlay.record(url);
+        if (!urls.isEmpty() && fileTarget != null) {
+            setText(fileTarget, urls.get(0));
+            fileTarget.setSelection(fileTarget.length());
+            fileTarget.requestFocus();
             if (editor != null) editor.sync();
         }
         markJsonDirty();
@@ -1171,10 +1295,7 @@ public class CustomCspDialog extends BaseAlertDialog {
         Notify.show("已加入快捷粘贴板 " + urls.size() + " 条");
     }
 
-    private void importExtensionFile(CustomCspSetting.Item item, String path) throws Exception {
-        String content = Path.read(Path.local(path));
-        if (TextUtils.isEmpty(content)) throw new IllegalArgumentException(getString(R.string.web_home_extension_source_empty));
-        String text = extensionArrayText(item, path, content);
+    private void applyExtensionImport(CustomCspSetting.Item item, String text) {
         item.setExtensionsExpanded(true);
         item.setExtensionsText(text);
         markJsonDirty();
@@ -1183,7 +1304,7 @@ public class CustomCspDialog extends BaseAlertDialog {
         else adapter.notifyDataSetChanged();
     }
 
-    private String extensionArrayText(CustomCspSetting.Item item, String path, String content) {
+    private String extensionArrayText(String key, String path, String content) {
         String name = path.substring(path.lastIndexOf('/') + 1);
         String lower = name.toLowerCase();
         JsonArray array = new JsonArray();
@@ -1195,7 +1316,7 @@ public class CustomCspDialog extends BaseAlertDialog {
             return pretty(array);
         }
         JsonObject object = new JsonObject();
-        object.addProperty("id", extensionId(item, name));
+        object.addProperty("id", extensionId(key, name));
         object.addProperty("name", name);
         object.addProperty("runAt", "document-end");
         object.addProperty("sourceType", "file");
@@ -1204,8 +1325,8 @@ public class CustomCspDialog extends BaseAlertDialog {
         return pretty(array);
     }
 
-    private String extensionId(CustomCspSetting.Item item, String name) {
-        String base = (item == null ? "" : item.getKey()) + "-" + name;
+    private String extensionId(String key, String name) {
+        String base = key + "-" + name;
         String value = base.toLowerCase().replaceAll("[^a-z0-9_-]+", "-").replaceAll("^-+|-+$", "");
         return TextUtils.isEmpty(value) ? "local-extension" : value;
     }

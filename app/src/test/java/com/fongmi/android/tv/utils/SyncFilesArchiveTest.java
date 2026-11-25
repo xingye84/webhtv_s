@@ -1,6 +1,8 @@
 package com.fongmi.android.tv.utils;
 
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -19,6 +21,32 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class SyncFilesArchiveTest {
+    @Rule
+    public TemporaryFolder folder = new TemporaryFolder();
+
+    @Test
+    public void privateCspUsesTheLegacyEntryNamesAndRestoresIntoPrivateStorage() throws Exception {
+        Path root = folder.newFolder("root").toPath();
+        Path cache = folder.newFolder("cache").toPath();
+        Path privateCsp = folder.newFolder("private").toPath();
+        Path restored = folder.newFolder("restored").toPath();
+        Path legacy = Files.createDirectories(root.resolve("TV/CustomCsp"));
+        Files.writeString(legacy.resolve("registry.json"), "legacy");
+        Files.writeString(legacy.resolve("obsolete.js"), "obsolete");
+        Files.writeString(privateCsp.resolve("registry.json"), "private");
+        SyncFiles.Archive archive = SyncFiles.createArchive(root.toFile(), cache.toFile(), privateCsp.toFile(), List.of("TV"), null, null);
+
+        assertEquals(1, Collections.frequency(entries(archive.getFile()), "TV/CustomCsp/registry.json"));
+        assertFalse(entries(archive.getFile()).contains("TV/CustomCsp/obsolete.js"));
+        assertEquals(1, SyncFiles.restoreArchive(archive.getFile(), root.toFile(), restored.toFile()));
+        assertEquals("private", Files.readString(restored.resolve("registry.json")));
+        assertEquals("legacy", Files.readString(legacy.resolve("registry.json")));
+
+        SyncFiles.Archive legacyArchive = SyncFiles.createArchive(root.toFile(), cache.toFile(), List.of("TV/CustomCsp"));
+        assertEquals(2, SyncFiles.restoreArchive(legacyArchive.getFile(), root.toFile(), restored.toFile()));
+        assertEquals("legacy", Files.readString(restored.resolve("registry.json")));
+        assertEquals("obsolete", Files.readString(restored.resolve("obsolete.js")));
+    }
 
     @Test
     public void overlappingTargetsProduceOneValidArchiveWithoutRuntimeTrees() throws Exception {

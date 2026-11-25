@@ -32,8 +32,10 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public class FileChooser {
 
@@ -66,6 +68,14 @@ public class FileChooser {
     }
 
     public void show(String mimeType, String[] mimeTypes, boolean allowMultiple) {
+        show(mimeType, mimeTypes, allowMultiple, false);
+    }
+
+    public void showDocument(String mimeType, String[] mimeTypes, boolean allowMultiple) {
+        show(mimeType, mimeTypes, allowMultiple, true);
+    }
+
+    private void show(String mimeType, String[] mimeTypes, boolean allowMultiple, boolean preferSystemPicker) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.setType(mimeType);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -73,7 +83,10 @@ public class FileChooser {
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple);
         intent.putExtra("android.content.extra.SHOW_ADVANCED", true);
         List<ResolveInfo> resolveInfos = App.get().getPackageManager().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
-        if (Util.isLeanback() || resolveInfos.isEmpty() || resolveInfos.get(0).activityInfo.packageName.contains("frameworkpackagestubs")) {
+        boolean useSystemPicker = preferSystemPicker
+                ? resolveInfos.stream().anyMatch(info -> !info.activityInfo.packageName.contains("frameworkpackagestubs"))
+                : !Util.isLeanback() && !resolveInfos.isEmpty() && !resolveInfos.get(0).activityInfo.packageName.contains("frameworkpackagestubs");
+        if (!useSystemPicker) {
             launcher.launch(new Intent(App.get(), FileActivity.class));
         } else {
             launcher.launch(Intent.createChooser(intent, ""));
@@ -112,6 +125,33 @@ public class FileChooser {
         return paths;
     }
 
+    public static List<String> getDocumentCopies(Intent intent, File staging) throws IOException {
+        Set<Uri> uris = new LinkedHashSet<>();
+        ClipData clip = intent.getClipData();
+        if (clip != null) for (int i = 0; i < clip.getItemCount(); i++) uris.add(clip.getItemAt(i).getUri());
+        uris.add(intent.getData());
+        uris.remove(null);
+        List<String> paths = new ArrayList<>();
+        for (Uri uri : uris) {
+            if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+                String name = getDisplayName(App.get(), uri);
+                if (name == null) name = uri.getLastPathSegment();
+                name = name == null ? "import" : new File(name).getName();
+                if (name.isEmpty() || name.equals(".") || name.equals("..")) throw new IOException("Invalid document name");
+                java.nio.file.Path dir = Files.createTempDirectory(staging.toPath(), "document-");
+                try (InputStream in = App.get().getContentResolver().openInputStream(uri)) {
+                    if (in == null) throw new IOException("Could not open selected document");
+                    java.nio.file.Path file = dir.resolve(name);
+                    Files.copy(in, file);
+                    paths.add(file.toString());
+                }
+            } else {
+                addPath(paths, uri);
+            }
+        }
+        return paths;
+    }
+
     private static void addPath(List<String> paths, Uri uri) {
         String path = getPathFromUri(uri);
         if (path != null && !path.isEmpty() && !paths.contains(path)) paths.add(path);
@@ -136,8 +176,13 @@ public class FileChooser {
             String decoded = encoded ? decodePath(path) : path;
             // 解码可能猜错：document/content 拿到的路径其实也已是明文，而 `+` 会被解成空格。
             // 解码结果不存在、原文存在时一律用原文——非持久分支同样受影响（字幕/弹幕都走这里）。
-            if (!decoded.equals(path) && !new File(decoded).exists() && new File(path).exists()) return path;
-            if (!persistent || new File(decoded).exists()) return decoded;
+            if (!decoded.equals(path) && !new File(decoded).exists() && new File(path).exists()) decoded = path;
+            File file = new File(decoded);
+            if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+                if (file.canRead()) return decoded;
+            } else if (!persistent || file.exists()) {
+                return decoded;
+            }
         }
         return createFileFromUri(context, uri, persistent);
     }
@@ -333,5 +378,14 @@ public class FileChooser {
 
     private static boolean isMediaDocument(Uri uri) {
         return "com.android.providers.media.documents".equals(uri.getAuthority());
+    }
+
+    private static String getDisplayName(Context context, Uri uri) {
+        String[] projection = {MediaStore.MediaColumns.DISPLAY_NAME};
+        try (Cursor cursor = context.getContentResolver().query(uri, projection, null, null, null)) {
+            return cursor != null && cursor.moveToFirst() ? cursor.getString(cursor.getColumnIndexOrThrow(projection[0])) : null;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 }

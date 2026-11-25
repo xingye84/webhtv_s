@@ -1,15 +1,54 @@
 package com.fongmi.android.tv.ui.bean;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import android.app.Application;
+
+import com.fongmi.android.tv.setting.CustomCspSetting;
+import com.google.gson.Gson;
+
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.annotation.Config;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 28, application = Application.class)
 public class SiteInjectHomeButtonSourceTest {
+
+    @Test
+    public void normalizingMergedSitesKeepsTheCurrentHomeSelection() {
+        CustomCspSetting.Registry registry = new Gson().fromJson("""
+                {"homeKey":"cinema","items":[
+                    {"id":"current","kind":"csp","key":"cinema"},
+                    {"id":"legacy","kind":"csp","key":"cinema"}
+                ]}
+                """, CustomCspSetting.Registry.class).normalize();
+
+        assertEquals("cinema", registry.getHomeKey());
+        assertEquals("cinema", registry.getItems().get(0).getKey());
+        assertEquals("cinema_2", registry.getItems().get(1).getKey());
+    }
+
+    @Test
+    public void generatedKeyDoesNotTakeTheHomeSelectionFromAnOriginalKey() {
+        CustomCspSetting.Registry registry = new Gson().fromJson("""
+                {"homeKey":"cinema_2","items":[
+                    {"id":"first","kind":"csp","key":"cinema"},
+                    {"id":"duplicate","kind":"csp","key":"cinema"},
+                    {"id":"selected","kind":"csp","key":"cinema_2"}
+                ]}
+                """, CustomCspSetting.Registry.class).normalize();
+
+        assertEquals("cinema_2", registry.getItems().get(1).getKey());
+        assertEquals(registry.getItems().get(2).getKey(), registry.getHomeKey());
+    }
 
     @Test
     public void homeButtonCatalogUsesASeparateSiteInjectionId() throws Exception {
@@ -58,9 +97,14 @@ public class SiteInjectHomeButtonSourceTest {
 
         String home = read("app/src/leanback/java/com/fongmi/android/tv/ui/activity/HomeActivity.java");
         assertTrue(home.contains("else if (item.getResId() == R.string.home_custom_csp) openCustomCsp()"));
-        assertTrue(home.contains("PermissionUtil.requestFile(this"));
-        assertTrue(home.contains("CustomCspDialog.show(this, this::setFunc)"));
-        assertTrue(home.contains("getSupportFragmentManager().isStateSaved()"));
+        String openCustomCsp = methodBody(home, "private void openCustomCsp()");
+        assertFalse(openCustomCsp.contains("PermissionUtil.requestFile"));
+        assertTrue(openCustomCsp.contains("CustomCspDialog.show(this, this::setFunc)"));
+        assertTrue(openCustomCsp.contains("getSupportFragmentManager().isStateSaved()"));
+        String manage = read("app/src/main/java/com/fongmi/android/tv/ui/dialog/ManagePageDialog.java");
+        String openManagement = methodBody(manage, "public static void show(FragmentActivity activity)");
+        assertFalse(openManagement.contains("PermissionUtil.requestFile"));
+        assertTrue(openManagement.contains("ManageService.start(activity)"));
         assertTrue(!home.contains("home_adblock"));
 
         String dialog = read("app/src/main/java/com/fongmi/android/tv/ui/dialog/CustomCspDialog.java");

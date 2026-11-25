@@ -25,9 +25,11 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -35,10 +37,13 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 public class CustomCspSetting {
 
-    private static final String DIR = "TV/CustomCsp";
+    public static final String ARCHIVE_PATH = "TV/CustomCsp";
+    private static final String PRIVATE_DIR = "CustomCsp";
+    private static final String PORTABLE_URL = "file://" + ARCHIVE_PATH + "/";
     private static final String REGISTRY = "registry.json";
     private static final String PREFIX = "__custom_csp_";
     private static final int MAX_INSERT_INDEX = 9;
@@ -56,7 +61,7 @@ public class CustomCspSetting {
     private static final Pattern JS_LIVE_METHOD = Pattern.compile("(?m)(?:^|[,{;]\\s*)(?:async\\s+)?liveContent\\s*(?:[:=]\\s*(?:async\\s*)?(?:function\\s*)?|\\()", Pattern.CASE_INSENSITIVE);
 
     public static Registry load() {
-        String text = Path.read(registryFile());
+        String text = Path.read(registryFile()).replace(PORTABLE_URL, localPrefix());
         return objectFrom(text);
     }
 
@@ -289,42 +294,16 @@ public class CustomCspSetting {
         return script && liveDirectory;
     }
 
-    public static void save(Registry registry) {
-        ensureFileAccess();
+    public static synchronized void save(Registry registry) {
         Set<String> before = itemIds(load());
         File file = registryFile();
-        String text = App.gson().toJson(registry.normalize());
-        Path.write(file, text.getBytes(StandardCharsets.UTF_8));
-        ensureWritten(file, text);
+        String text = App.gson().toJson(registry.normalize()).replace(localPrefix(), PORTABLE_URL);
+        writeText(file, text);
         cleanupRemovedFiles(before, itemIds(registry));
     }
 
     public static void writePage(String id, String code) {
-        ensureFileAccess();
-        File file = file(id, "index.html");
-        String text = code == null ? "" : code;
-        Path.write(file, text.getBytes(StandardCharsets.UTF_8));
-        ensureWritten(file, text);
-    }
-
-    public static void copyPage(File source, String id) {
-        ensureFileAccess();
-        File file = file(id, "index.html");
-        Path.copy(source, file);
-        if (!source.exists() || !file.exists() || !Arrays.equals(Path.readToByte(source), Path.readToByte(file))) throw new IllegalStateException(App.get().getString(R.string.setting_custom_csp_save_failed, file.getAbsolutePath()));
-    }
-
-    public static String copyFile(File source, String id) {
-        ensureFileAccess();
-        if (source == null || !source.isFile()) throw new IllegalStateException(App.get().getString(R.string.setting_custom_csp_save_failed, ""));
-        File file = file(id, source.getName());
-        try {
-            if (!source.getCanonicalPath().equals(file.getCanonicalPath())) Path.copy(source, file);
-        } catch (Exception e) {
-            Path.copy(source, file);
-        }
-        if (!file.exists() || !Arrays.equals(Path.readToByte(source), Path.readToByte(file))) throw new IllegalStateException(App.get().getString(R.string.setting_custom_csp_save_failed, file.getAbsolutePath()));
-        return localUrl(id, source.getName());
+        writeText(file(id, "index.html"), code == null ? "" : code);
     }
 
     public static void deleteFiles(String id) {
@@ -356,26 +335,120 @@ public class CustomCspSetting {
         for (String id : before) if (!after.contains(id)) deleteFiles(id);
     }
 
-    private static void ensureFileAccess() {
-        if (!Setting.hasFileAccess()) throw new IllegalStateException(App.get().getString(R.string.setting_custom_csp_permission_required));
+    private static void writeText(File target, String text) {
+        java.nio.file.Path temp = null;
+        try {
+            java.nio.file.Path parent = Files.createDirectories(target.toPath().getParent());
+            temp = Files.createTempFile(parent, ".write-", ".tmp");
+            Files.write(temp, text.getBytes(StandardCharsets.UTF_8));
+            Files.move(temp, target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            throw writeError(target, e);
+        } finally {
+            if (temp != null) temp.toFile().delete();
+        }
     }
 
-    private static void ensureWritten(File file, String text) {
-        if (!file.exists() || !TextUtils.equals(Path.read(file), text)) throw new IllegalStateException(App.get().getString(R.string.setting_custom_csp_save_failed, file.getAbsolutePath()));
+    private static IllegalStateException writeError(File file, IOException cause) {
+        return new IllegalStateException(App.get().getString(R.string.setting_custom_csp_save_failed, file.getAbsolutePath()), cause);
     }
 
     public static File dir() {
-        File dir = Path.root(DIR);
-        if (!dir.exists()) dir.mkdirs();
+        File dir = Path.files(PRIVATE_DIR);
+        if (!dir.exists()) migrateLegacyIfReadable(dir);
         return dir;
     }
 
+    public static Registry loadForEditor() {
+        migrateLegacyIfReadable(Path.files(PRIVATE_DIR));
+        return load();
+    }
+
+    private static void migrateLegacyIfReadable(File target) {
+        try {
+            migrateLegacy(new File(Path.root(), ARCHIVE_PATH), target);
+        } catch (IOException | RuntimeException e) {
+            SpiderDebug.log("custom-csp", "legacy migration failed: %s", e.toString());
+        }
+    }
+
+    static synchronized void migrateLegacy(File legacy, File target) throws IOException {
+        // Keep this device's migration status outside the portable CSP archive.
+        java.nio.file.Path marker = target.toPath().resolveSibling("." + target.getName() + ".legacy-migrated");
+        File registry = new File(legacy, REGISTRY);
+        if (Files.exists(marker) || !registry.isFile() || !registry.canRead() || Files.isSymbolicLink(registry.toPath())) return;
+        File privateRegistry = new File(target, REGISTRY);
+        Set<String> privateIds = new HashSet<>();
+        String merged = privateRegistry.isFile() ? mergeLegacyItems(privateRegistry, registry, privateIds) : null;
+        java.nio.file.Path root = legacy.toPath();
+        java.nio.file.Path staging = Files.createTempDirectory(target.toPath().getParent(), ".custom-csp-");
+        try (Stream<java.nio.file.Path> tree = Files.walk(root)) {
+            for (var paths = tree.iterator(); paths.hasNext(); ) {
+                java.nio.file.Path source = paths.next();
+                java.nio.file.Path relative = root.relativize(source);
+                if (Files.isSymbolicLink(source) || privateIds.contains(relative.getName(0).toString())) continue;
+                java.nio.file.Path destination = staging.resolve(relative);
+                if (Files.isDirectory(source)) Files.createDirectories(destination);
+                else if (Files.isRegularFile(source)) Files.copy(source, destination);
+            }
+            if (target.exists()) {
+                mergeLegacyFiles(staging, target);
+                if (merged != null) Files.write(staging.resolve(REGISTRY), merged.getBytes(StandardCharsets.UTF_8));
+                Files.move(staging.resolve(REGISTRY), privateRegistry.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.move(staging, target.toPath(), StandardCopyOption.ATOMIC_MOVE);
+            }
+            Files.createFile(marker);
+        } finally {
+            Path.clear(staging.toFile());
+        }
+    }
+
+    private static String mergeLegacyItems(File currentFile, File legacyFile, Set<String> privateIds) throws IOException {
+        JsonObject current = JsonParser.parseString(new String(Files.readAllBytes(currentFile.toPath()), StandardCharsets.UTF_8)).getAsJsonObject();
+        JsonObject legacy = JsonParser.parseString(new String(Files.readAllBytes(legacyFile.toPath()), StandardCharsets.UTF_8)).getAsJsonObject();
+        JsonArray items = current.getAsJsonArray("items");
+        for (JsonElement item : items) privateIds.add(item.getAsJsonObject().get("id").getAsString());
+        Set<String> seen = new HashSet<>(privateIds);
+        for (JsonElement item : legacy.getAsJsonArray("items")) {
+            if (seen.add(item.getAsJsonObject().get("id").getAsString())) items.add(item);
+        }
+        return current.toString();
+    }
+
+    private static void mergeLegacyFiles(java.nio.file.Path staging, File target) throws IOException {
+        File root = target.getCanonicalFile();
+        try (Stream<java.nio.file.Path> tree = Files.walk(staging)) {
+            for (var paths = tree.iterator(); paths.hasNext(); ) {
+                java.nio.file.Path source = paths.next();
+                java.nio.file.Path relative = staging.relativize(source);
+                if (relative.toString().isEmpty() || REGISTRY.equals(relative.toString())) continue;
+                File destination = new File(root, relative.toString()).getCanonicalFile();
+                if (!destination.toPath().startsWith(root.toPath())) throw new IOException("Invalid legacy CSP asset path");
+                if (Files.isDirectory(source)) Files.createDirectories(destination.toPath());
+                else if (!destination.exists()) Files.move(source, destination.toPath(), StandardCopyOption.ATOMIC_MOVE);
+            }
+        }
+    }
+
     public static File file(String id, String name) {
-        return new File(new File(dir(), id), name);
+        File root = dir();
+        try {
+            File item = new File(root, id).getCanonicalFile();
+            File file = new File(item, name).getCanonicalFile();
+            if (!root.getCanonicalFile().equals(item.getParentFile()) || !item.equals(file.getParentFile())) throw new IOException("Invalid CSP file path");
+            return file;
+        } catch (IOException e) {
+            throw writeError(root, e);
+        }
+    }
+
+    private static String localPrefix() {
+        return "file://" + Path.files(PRIVATE_DIR).getAbsolutePath() + "/";
     }
 
     public static String localUrl(String id, String name) {
-        return "file://" + DIR + "/" + id + "/" + name;
+        return localPrefix() + id + "/" + name;
     }
 
     public static Result inject(List<Site> sites) {
@@ -588,12 +661,16 @@ public class CustomCspSetting {
             Set<String> ids = new HashSet<>();
             Set<String> keys = new HashSet<>();
             List<Item> unique = new ArrayList<>();
+            boolean homeResolved = false;
             for (Item item : items) {
                 String oldKey = item.peekKey();
                 item.normalize();
                 item.ensureUniqueKey(keys);
-                if (!TextUtils.isEmpty(oldKey) && oldKey.equals(homeKey) && !oldKey.equals(item.getKey())) homeKey = item.getKey();
                 if (!ids.add(item.getId())) continue;
+                if (!homeResolved && !item.isLive() && !item.isOther() && !oldKey.isEmpty() && oldKey.equals(homeKey)) {
+                    homeKey = item.getKey();
+                    homeResolved = true;
+                }
                 unique.add(item);
             }
             items = unique;

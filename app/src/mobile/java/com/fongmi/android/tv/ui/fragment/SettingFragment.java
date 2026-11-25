@@ -1,6 +1,5 @@
 package com.fongmi.android.tv.ui.fragment;
 
-import android.text.TextUtils;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -159,8 +158,7 @@ public class SettingFragment extends BaseFragment implements ConfigListener, Sit
     @Override
     public void setConfig(Config config) {
         if (config == null) return;
-        String url = config.getUrl();
-        if (!TextUtils.isEmpty(url) && url.startsWith("file")) {
+        if (PermissionUtil.requiresFileAccess(config.getUrl())) {
             requireView().post(() -> PermissionUtil.requestFile(this, allGranted -> load(config)));
         } else {
             load(config);

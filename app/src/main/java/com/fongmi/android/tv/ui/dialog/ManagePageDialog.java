@@ -19,7 +19,6 @@ import com.fongmi.android.tv.databinding.DialogManagePageBatteryBinding;
 import com.fongmi.android.tv.databinding.DialogManagePageBinding;
 import com.fongmi.android.tv.service.ManageService;
 import com.fongmi.android.tv.utils.Notify;
-import com.fongmi.android.tv.utils.PermissionUtil;
 import com.fongmi.android.tv.utils.ResUtil;
 import com.github.catvod.crawler.SpiderDebug;
 
@@ -33,13 +32,6 @@ public final class ManagePageDialog {
     }
 
     public static void show(FragmentActivity activity) {
-        PermissionUtil.requestFile(activity, granted -> {
-            if (granted) showInternal(activity);
-            else Notify.show(R.string.setting_custom_csp_permission_required);
-        });
-    }
-
-    private static void showInternal(FragmentActivity activity) {
         ManageService.start(activity);
         String localUrl = ManageService.getLocalUrl();
         String lanUrl = ManageService.getLanUrl();

@@ -112,7 +112,7 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
         mBinding.getRoot().addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> checkWindowShape(right - left, bottom - top));
         mBinding.navigation.setOnItemSelectedListener(this);
         setNavigation();
-        PermissionUtil.requestFile(this, allGranted -> PermissionUtil.requestNotify(this));
+        PermissionUtil.requestNotify(this);
         FollowingScheduler.ensurePeriodic(this);
         FollowingScheduler.enqueueDueNow(this);
         initFragment(savedInstanceState);
@@ -152,7 +152,11 @@ public class HomeActivity extends BaseActivity implements NavigationBarView.OnIt
         } else if (Intent.ACTION_SEND.equals(intent.getAction())) {
             VideoActivity.push(this, intent.getStringExtra(Intent.EXTRA_TEXT));
         } else if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
-            PermissionUtil.requestFile(this, allGranted -> checkType(intent));
+            if (PermissionUtil.requiresFileAccess(intent.getData().toString())) {
+                PermissionUtil.requestFile(this, allGranted -> checkType(intent));
+            } else {
+                checkType(intent);
+            }
         } else if (Intent.ACTION_SEARCH.equals(intent.getAction())) {
             String keyword = intent.getStringExtra(SearchManager.QUERY);
             if (!TextUtils.isEmpty(keyword)) SearchActivity.start(this, keyword);

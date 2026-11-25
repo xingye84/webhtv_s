@@ -45,7 +45,6 @@ import com.fongmi.android.tv.ui.dialog.WebHomeExtensionDialog;
 import com.fongmi.android.tv.ui.dialog.WebHomeThemeDialog;
 import com.fongmi.android.tv.utils.LoginStateSync;
 import com.fongmi.android.tv.utils.Notify;
-import com.fongmi.android.tv.utils.PermissionUtil;
 import com.github.catvod.crawler.SpiderDebug;
 import com.fongmi.android.tv.web.ext.WebHomeExtensionRegistry;
 
@@ -101,11 +100,10 @@ public class SettingEnhanceActivity extends BaseActivity {
         mBinding.shellProxy.setOnClickListener(view -> ShellProxyDialog.show(this, this::setText));
         mBinding.shellProxy.setOnLongClickListener(v -> false);
         mBinding.shellProxyConfig.setVisibility(View.GONE);
-        mBinding.customCsp.setOnClickListener(view -> PermissionUtil.requestFile(this, granted -> {
+        mBinding.customCsp.setOnClickListener(view -> {
             if (isFinishing() || isDestroyed() || getSupportFragmentManager().isStateSaved()) return;
-            if (granted) CustomCspDialog.show(this, this::setText);
-            else Notify.show(R.string.setting_custom_csp_permission_required);
-        }));
+            CustomCspDialog.show(this, this::setText);
+        });
         mBinding.loginState.setOnClickListener(view -> LoginStateLearnDialog.show(this, this::setText));
         mBinding.oneKeySync.setOnClickListener(v -> OneKeySyncDialog.create().show(this));
         mBinding.pluginManager.setOnClickListener(view -> PluginManagerActivity.start(this));
