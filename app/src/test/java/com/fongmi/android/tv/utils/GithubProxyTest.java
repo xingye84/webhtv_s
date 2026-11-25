@@ -76,7 +76,7 @@ public class GithubProxyTest {
 
     @Test
     public void probeUrlUsesNormalizedSourceAndFixedTarget() {
-        assertEquals("https://ghfast.top/https://github.com/Silent1566/webhtv/releases/download/update-channel/update.json",
+        assertEquals("https://ghfast.top/https://github.com/xingye84/webhtv_s/releases/download/update-channel/update.json",
                 GithubProxy.probeUrl("https://ghfast.top"));
     }
 
