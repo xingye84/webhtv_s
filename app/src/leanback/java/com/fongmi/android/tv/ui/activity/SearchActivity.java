@@ -306,7 +306,7 @@ public class SearchActivity extends BaseActivity implements WordAdapter.OnClickL
 
     @Override
     public void onDataChanged(int size) {
-        mBinding.recordLayout.setVisibility(size == 0 ? View.GONE : View.VISIBLE);
+        mBinding.recordLayout.setVisibility(size == 0 ? View.INVISIBLE : View.VISIBLE);
         if (size == 0) focusFirstWord();
     }
 
@@ -478,6 +478,9 @@ public class SearchActivity extends BaseActivity implements WordAdapter.OnClickL
     }
 
     private boolean handleKeywordKey(KeyEvent event) {
+        if (KeyUtil.isLeftKey(event) && mBinding.keyword.getSelectionStart() == 0 && mBinding.keyword.getSelectionEnd() == 0) {
+            return focusFirst(mBinding.recordRecycler);
+        }
         if (!KeyUtil.isRightKey(event)) return false;
         if (mBinding.keyword.getSelectionEnd() < mBinding.keyword.getText().length()) return false;
         mBinding.searchScope.requestFocus();
@@ -491,8 +494,8 @@ public class SearchActivity extends BaseActivity implements WordAdapter.OnClickL
             return true;
         }
         if (!KeyUtil.isRightKey(event)) return false;
-        boolean hasRecord = mBinding.recordLayout.getVisibility() == View.VISIBLE;
-        return hasRecord ? focusFirst(mBinding.recordRecycler) : focusFirstWord();
+        focusFirstWord();
+        return true;
     }
 
     private boolean handleKeyboardKey(KeyEvent event, View item) {
@@ -500,29 +503,23 @@ public class SearchActivity extends BaseActivity implements WordAdapter.OnClickL
             mBinding.keyword.requestFocus();
             return true;
         }
-        if (KeyUtil.isLeftKey(event) && isFirstInRow(mBinding.keyboard, item)) return true;
+        if (KeyUtil.isLeftKey(event) && isFirstInRow(mBinding.keyboard, item)) {
+            focusFirst(mBinding.recordRecycler);
+            return true;
+        }
+        if (KeyUtil.isRightKey(event) && isLastInRow(mBinding.keyboard, item)) {
+            focusFirstWord();
+            return true;
+        }
         return KeyUtil.isDownKey(event) && isLastRow(mBinding.keyboard, item);
     }
 
     private boolean handleWordKey(KeyEvent event, View item) {
-        if (KeyUtil.isRightKey(event)) return isLastInRow(mBinding.wordRecycler, item);
         if (KeyUtil.isDownKey(event)) return isLastRow(mBinding.wordRecycler, item);
-        if (KeyUtil.isUpKey(event) && isFirstRow(mBinding.wordRecycler, item)) {
-            if (mBinding.recordLayout.getVisibility() == View.VISIBLE) {
-                View child = findNearestInLastRow(mBinding.recordRecycler, item.getLeft());
-                if (child != null) {
-                    mBinding.scroll.smoothScrollTo(0, 0);
-                    child.requestFocus();
-                    return true;
-                }
-            }
-            return true;
-        }
-        return false;
+        return handleWordColumnKey(event, mBinding.wordRecycler, item);
     }
 
     private boolean handleHotWordKey(KeyEvent event, RecyclerView recyclerView, View item) {
-        if (KeyUtil.isRightKey(event)) return isLastInRow(recyclerView, item);
         if (KeyUtil.isDownKey(event) && isLastRow(recyclerView, item)) {
             RecyclerView next = findHotRecycler(recyclerView, 1);
             return next == null || focusFirst(next);
@@ -537,24 +534,27 @@ public class SearchActivity extends BaseActivity implements WordAdapter.OnClickL
                 }
                 return focusFirst(prev);
             }
-            if (mBinding.recordLayout.getVisibility() == View.VISIBLE) {
-                View child = findNearestInLastRow(mBinding.recordRecycler, item.getLeft());
-                if (child != null) {
-                    mBinding.scroll.smoothScrollTo(0, 0);
-                    child.requestFocus();
-                    return true;
-                }
-            }
+        }
+        return handleWordColumnKey(event, recyclerView, item);
+    }
+
+    private boolean handleWordColumnKey(KeyEvent event, RecyclerView recyclerView, View item) {
+        if (KeyUtil.isRightKey(event)) return isLastInRow(recyclerView, item);
+        if ((KeyUtil.isLeftKey(event) && isFirstInRow(recyclerView, item))
+                || (KeyUtil.isUpKey(event) && isFirstRow(recyclerView, item))) {
+            focusFirst(mBinding.keyboard);
             return true;
         }
         return false;
     }
 
     private boolean handleRecordKey(KeyEvent event, View item) {
-        if (KeyUtil.isRightKey(event)) return isLastInRow(mBinding.recordRecycler, item);
+        if (KeyUtil.isRightKey(event) && isLastInRow(mBinding.recordRecycler, item)) {
+            focusFirst(mBinding.keyboard);
+            return true;
+        }
         if (KeyUtil.isUpKey(event)) return isFirstRow(mBinding.recordRecycler, item);
-        if (KeyUtil.isDownKey(event) && isLastRow(mBinding.recordRecycler, item)) return focusFirstWord();
-        return false;
+        return KeyUtil.isDownKey(event) && isLastRow(mBinding.recordRecycler, item);
     }
 
     private RecyclerView findHotRecycler(View current) {
@@ -589,9 +589,7 @@ public class SearchActivity extends BaseActivity implements WordAdapter.OnClickL
 
     private boolean focusFirst(RecyclerView rv) {
         View child = rv.getChildAt(0);
-        if (child == null) return false;
-        child.requestFocus();
-        return true;
+        return child != null && child.requestFocus();
     }
 
     private interface HotSaver {

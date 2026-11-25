@@ -942,7 +942,7 @@ public class PlayerOsdController {
     private void setTextSize(float sp) {
         topLeft.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
         topLeft.setTextColor(0xFFFFFFFF);
-        topRight.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        topRight.setTextSize(TypedValue.COMPLEX_UNIT_SP, Util.isLeanback() ? 20f : sp);
         topRight.setTextColor(0xFFFFFFFF);
         bottomLeft.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
         bottomLeft.setTextColor(0xFFFFFFFF);

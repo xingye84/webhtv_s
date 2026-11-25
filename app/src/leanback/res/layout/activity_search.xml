@@ -9,10 +9,51 @@
     android:orientation="horizontal"
     android:padding="24dp">
 
-    <androidx.appcompat.widget.LinearLayoutCompat
-        android:layout_width="wrap_content"
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/recordLayout"
+        android:layout_width="0dp"
         android:layout_height="match_parent"
-        android:layout_marginEnd="24dp"
+        android:layout_marginEnd="16dp"
+        android:layout_weight="1"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:overScrollMode="never"
+        android:visibility="invisible"
+        tools:visibility="visible">
+
+        <androidx.appcompat.widget.LinearLayoutCompat
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <com.google.android.material.textview.MaterialTextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp"
+                android:text="@string/search_record"
+                android:textColor="?attr/webhtvColorOnWallpaper"
+                android:textSize="24sp" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recordRecycler"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="-6dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:nestedScrollingEnabled="false"
+                android:overScrollMode="never"
+                tools:itemCount="6"
+                tools:listitem="@layout/adapter_search_record" />
+
+        </androidx.appcompat.widget.LinearLayoutCompat>
+
+    </androidx.core.widget.NestedScrollView>
+
+    <androidx.appcompat.widget.LinearLayoutCompat
+        android:layout_width="400dp"
+        android:layout_height="match_parent"
+        android:layout_marginEnd="16dp"
         android:orientation="vertical">
 
         <androidx.appcompat.widget.LinearLayoutCompat
@@ -38,9 +79,10 @@
             -->
             <androidx.appcompat.widget.LinearLayoutCompat
                 android:id="@+id/keywordField"
-                android:layout_width="220dp"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_gravity="center_vertical"
+                android:layout_weight="1"
                 android:addStatesFromChildren="true"
                 android:background="@drawable/selector_tv_search_field"
                 android:gravity="center_vertical"
@@ -113,8 +155,9 @@
 
     <androidx.core.widget.NestedScrollView
         android:id="@+id/scroll"
-        android:layout_width="match_parent"
+        android:layout_width="0dp"
         android:layout_height="match_parent"
+        android:layout_weight="1.8"
         android:clipChildren="false"
         android:clipToPadding="false"
         android:fillViewport="true"
@@ -126,35 +169,6 @@
             android:clipChildren="false"
             android:clipToPadding="false"
             android:orientation="vertical">
-
-            <androidx.appcompat.widget.LinearLayoutCompat
-                android:id="@+id/recordLayout"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="16dp"
-                android:orientation="vertical"
-                android:visibility="gone">
-
-                <com.google.android.material.textview.MaterialTextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="14dp"
-                    android:text="@string/search_record"
-                    android:textColor="?attr/webhtvColorOnWallpaper"
-                    android:textSize="24sp" />
-
-                <androidx.recyclerview.widget.RecyclerView
-                    android:id="@+id/recordRecycler"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="-6dp"
-                    android:clipChildren="false"
-                    android:clipToPadding="false"
-                    android:overScrollMode="never"
-                    tools:itemCount="6"
-                    tools:listitem="@layout/adapter_search_record" />
-
-            </androidx.appcompat.widget.LinearLayoutCompat>
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/word"
